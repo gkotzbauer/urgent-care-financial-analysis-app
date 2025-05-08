@@ -2,7 +2,7 @@ import base64
 import io
 import os
 import dash
-import dash_table
+from dash import dash_table
 import pandas as pd
 import numpy as np
 from dash import dcc, html, Input, Output, State
