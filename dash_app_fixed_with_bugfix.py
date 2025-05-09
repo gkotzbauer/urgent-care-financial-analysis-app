@@ -36,7 +36,11 @@ def parse_data(contents, filename):
     decoded = base64.b64decode(content_string)
     df = pd.read_excel(io.BytesIO(decoded), engine='openpyxl')
 
+    # Fix: only drop 'Week' NAs if column exists
+    if 'Week' not in df.columns:
+        raise ValueError("Uploaded file is missing required 'Week' column.")
     df = df.dropna(subset=['Week'])
+
     df['Payments + Expected'] = df['Payments + Expected'].replace('[\\$,]', '', regex=True).astype(float)
     df['Average Payment'] = df['Average Payment'].abs()
     df.fillna(0, inplace=True)
@@ -102,7 +106,10 @@ def update_output(contents, filename, week_val, cat_val, diag_val):
     if contents is None:
         return None, {}, {}, {}
 
-    df = parse_data(contents, filename)
+    try:
+        df = parse_data(contents, filename)
+    except Exception as e:
+        return html.Div([f"Error processing file: {e}"]), {}, {}, {}
 
     if week_val:
         df = df[df['Week'] == week_val]
