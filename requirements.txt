@@ -1,8 +1,9 @@
-dash
-dash-bootstrap-components
-plotly
-pandas
-openpyxl
-scikit-learn
-numpy
-gunicorn
+dash==3.0.4
+dash-bootstrap-components==2.0.2
+pandas==2.2.3
+openpyxl==3.1.5
+scikit-learn==1.6.1
+plotly==6.0.1
+Flask==3.0.3
+numpy==2.2.5
+gunicorn==23.0.0
