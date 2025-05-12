@@ -104,3 +104,5 @@ def update_dashboard(contents, filename, selected_week, selected_segment):
 
 if __name__ == "__main__":
     app.run(debug=True)
+
+application = app.server  # For Gunicorn
