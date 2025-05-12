@@ -8,13 +8,11 @@ import numpy as np
 import dash_bootstrap_components as dbc
 from sklearn.linear_model import LinearRegression
 
-# Initialize the app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
-application = app.server  # For deployment via Gunicorn
+application = app.server
 
 app.layout = html.Div([
     html.H2("Weekly Financial Performance Dashboard"),
-
     dcc.Upload(
         id='upload-data',
         children=html.Button('Upload Excel File'),
@@ -22,17 +20,14 @@ app.layout = html.Div([
     ),
     html.Br(),
     html.Div(id='file-name-display', style={'marginBottom': 20}),
-
     dbc.Row([
         dbc.Col(dcc.Dropdown(id='week-filter', placeholder="Filter by Week"), width=6),
         dbc.Col(dcc.Dropdown(id='segment-filter', placeholder="Filter by Performance Segment"), width=6)
     ]),
     html.Br(),
-
     dcc.Graph(id='segment-count-chart'),
     dcc.Graph(id='missed-revenue-chart'),
     dcc.Graph(id='low-payment-reason-chart'),
-
     html.Hr(),
     html.H4("Performance Table"),
     dash_table.DataTable(
@@ -47,59 +42,78 @@ app.layout = html.Div([
 def parse_contents(contents, filename):
     content_type, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
-    df = pd.read_excel(io.BytesIO(decoded), engine='openpyxl')
-    df.columns = df.columns.str.strip()
-    df = df.dropna(subset=['Week'])
+    raw_df = pd.read_excel(io.BytesIO(decoded), engine='openpyxl')
+    raw_df.columns = raw_df.columns.str.strip()
+    raw_df = raw_df.dropna(subset=['Week'])
 
     numeric_columns = [
         "Average Payment", "Avg. Chart E/M Weight", "Charge Amount", "Collection %",
-        "Total Payments", "Visit_Count", "Visits With Lab Count"
+        "Total Payments", "Visit Count", "Visits With Lab Count"
     ]
-    df[numeric_columns] = df[numeric_columns].apply(pd.to_numeric, errors='coerce')
-    df['Collection %'] = df['Collection %'].abs()
+    raw_df[numeric_columns] = raw_df[numeric_columns].apply(pd.to_numeric, errors='coerce')
+    raw_df['Collection %'] = raw_df['Collection %'].abs()
 
-    df_model = df.copy()
-    X = df_model[[
+    # Pivot financial class % into columns
+    payment_pct = raw_df.pivot_table(
+        index="Week",
+        columns="Primary Financial Class",
+        values="% of Total Payments",
+        aggfunc='first'
+    ).fillna(0)
+    payment_pct.columns = [f"{col} % of Total Payments" for col in payment_pct.columns]
+
+    # Aggregate other metrics by week
+    weekly_df = raw_df.groupby("Week").agg({
+        "Average Payment": "mean",
+        "Avg. Chart E/M Weight": "mean",
+        "Charge Amount": "sum",
+        "Collection %": "mean",
+        "Total Payments": "sum",
+        "Visit Count": "sum",
+        "Visits With Lab Count": "sum"
+    }).reset_index()
+
+    df = pd.merge(weekly_df, payment_pct, left_on="Week", right_index=True, how="left").fillna(0)
+
+    # Regression analysis
+    features = [
         "Average Payment", "Avg. Chart E/M Weight", "Charge Amount", "Collection %",
-        "Visit_Count", "Visits With Lab Count"
-    ]]
-    y = df_model["Total Payments"]
+        "Visit Count", "Visits With Lab Count"
+    ]
+    X = df[features]
+    y = df["Total Payments"]
 
     model = LinearRegression()
     model.fit(X, y)
-    df_model["Predicted Revenue"] = model.predict(X)
-    df_model["Residual"] = df_model["Total Payments"] - df_model["Predicted Revenue"]
-    df_model["Z-Score Residual"] = (df_model["Residual"] - df_model["Residual"].mean()) / df_model["Residual"].std()
+    df["Predicted Revenue"] = model.predict(X)
+    df["Residual"] = df["Total Payments"] - df["Predicted Revenue"]
+    df["Z-Score Residual"] = (df["Residual"] - df["Residual"].mean()) / df["Residual"].std()
 
-    def assign_segment(z):
+    def segment(z):
         if z <= -1.75: return "Significantly Underperformed"
         elif z <= -0.75: return "Underperformed"
         elif z >= 1.75: return "Significantly Overperformed"
         elif z >= 0.75: return "Overperformed"
         else: return "Near Expected"
 
-    df_model["Performance Segment"] = df_model["Z-Score Residual"].apply(assign_segment)
+    df["Performance Segment"] = df["Z-Score Residual"].apply(segment)
 
     diagnostics = []
-    for _, row in df_model.iterrows():
+    for _, row in df.iterrows():
         reasons = []
-        for var in ["Average Payment", "Avg. Chart E/M Weight", "Charge Amount", "Collection %",
-                    "Visit_Count", "Visits With Lab Count"]:
-            if row["Performance Segment"] in ["Underperformed", "Significantly Underperformed"]:
-                if row[var] < df_model[var].mean():
-                    reasons.append(f"Low {var}")
-            elif row["Performance Segment"] in ["Overperformed", "Significantly Overperformed"]:
-                if row[var] > df_model[var].mean():
-                    reasons.append(f"High {var}")
+        for col in features:
+            if row["Performance Segment"] in ["Underperformed", "Significantly Underperformed"] and row[col] < df[col].mean():
+                reasons.append(f"Low {col}")
+            elif row["Performance Segment"] in ["Overperformed", "Significantly Overperformed"] and row[col] > df[col].mean():
+                reasons.append(f"High {col}")
         diagnostics.append("; ".join(reasons))
-    df_model["Performance Diagnostics"] = diagnostics
+    df["Performance Diagnostics"] = diagnostics
 
-    for var in ["Average Payment", "Avg. Chart E/M Weight", "Charge Amount", "Collection %",
-                "Visit_Count", "Visits With Lab Count"]:
-        df_model[f"Low {var}"] = (df_model["Performance Diagnostics"].str.contains(f"Low {var}")).astype(int)
-        df_model[f"High {var}"] = (df_model["Performance Diagnostics"].str.contains(f"High {var}")).astype(int)
+    for col in features:
+        df[f"Low {col}"] = df["Performance Diagnostics"].str.contains(f"Low {col}").astype(int)
+        df[f"High {col}"] = df["Performance Diagnostics"].str.contains(f"High {col}").astype(int)
 
-    return df_model
+    return df
 
 @app.callback(
     Output('performance-table', 'data'),
@@ -115,19 +129,20 @@ def parse_contents(contents, filename):
     Input('week-filter', 'value'),
     Input('segment-filter', 'value')
 )
-def update_dashboard(contents, filename, selected_week, selected_segment):
+def update_dashboard(contents, filename, week_val, segment_val):
     if not contents:
         return [], [], {}, {}, {}, [], [], ""
 
     df = parse_contents(contents, filename)
+
     filtered = df.copy()
-    if selected_week:
-        filtered = filtered[filtered["Week"] == selected_week]
-    if selected_segment:
-        filtered = filtered[filtered["Performance Segment"] == selected_segment]
+    if week_val:
+        filtered = filtered[filtered["Week"] == week_val]
+    if segment_val:
+        filtered = filtered[filtered["Performance Segment"] == segment_val]
 
     data = filtered.to_dict("records")
-    columns = [{"name": i, "id": i} for i in filtered.columns]
+    columns = [{"name": col, "id": col} for col in filtered.columns]
 
     fig1 = px.histogram(df, x="Performance Segment", title="Number of Weeks by Segment")
 
@@ -140,11 +155,10 @@ def update_dashboard(contents, filename, selected_week, selected_segment):
         title="Low Average Payment Reason Count by Week"
     )
 
-    week_options = [{"label": w, "value": w} for w in sorted(df["Week"].unique())]
-    segment_options = [{"label": s, "value": s} for s in sorted(df["Performance Segment"].unique())]
+    weeks = [{"label": w, "value": w} for w in sorted(df["Week"].unique())]
+    segments = [{"label": s, "value": s} for s in sorted(df["Performance Segment"].unique())]
 
-    return data, columns, fig1, fig2, fig3, week_options, segment_options, f"File loaded: {filename}"
+    return data, columns, fig1, fig2, fig3, weeks, segments, f"File loaded: {filename}"
 
-# Start the app
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=8050)
